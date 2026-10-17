@@ -1,0 +1,4 @@
+rank,channel,edu_score,confidence,comment_count,positive_pct,helped_pct,confused_pct,lw_sentiment
+1,Physics with Muhammad Arafat Khan,60.88,Low,30,70,6.7,0,0.5553
+2,Inter Physics Lectures,60.27,Low,33,51.5,21.2,0,0.3561
+3,Lectures Of Physics,59.57,Low,5,60,20,20,0.503

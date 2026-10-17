@@ -1,0 +1,352 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>YouTube Educational Video Analyzer & Sentiment Recommender</title>
+  <meta name="description" content="Analyze educational YouTube videos with viewer sentiment, Roman Urdu comprehension signals, and interactive visual graphs.">
+  
+  <!-- Modern Google Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+  
+  <!-- Chart.js for Interactive Visualizations -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <!-- Background Glow Orbs -->
+  <div class="bg-orb orb-1"></div>
+  <div class="bg-orb orb-2"></div>
+  <div class="bg-orb orb-3"></div>
+
+  <!-- App Header -->
+  <header class="app-header">
+    <div class="header-container">
+      <div class="brand">
+        <div class="brand-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M22.54 6.42a2.78 2.78 0 0 0-1.94-2C18.88 4 12 4 12 4s-6.88 0-8.6.46a2.78 2.78 0 0 0-1.94 2A29 29 0 0 0 1 11.75a29 29 0 0 0 .46 5.33A2.78 2.78 0 0 0 3.4 19c1.72.46 8.6.46 8.6.46s6.88 0 8.6-.46a2.78 2.78 0 0 0 1.94-2 29 29 0 0 0 .46-5.25 29 29 0 0 0-.46-5.33z"></path>
+            <polygon points="9.75 15.02 15.5 11.75 9.75 8.48 9.75 15.02"></polygon>
+          </svg>
+        </div>
+        <div>
+          <h1 class="brand-title">EduSense Analytics</h1>
+          <p class="brand-sub">YouTube Educational Video & Sentiment Intelligence</p>
+        </div>
+      </div>
+      <div class="header-badges">
+        <span class="badge api-status">
+          <span class="pulse-dot"></span> YouTube Data API v3 Active
+        </span>
+        <span class="badge locale-badge">Urdu & Roman Urdu Ready</span>
+      </div>
+    </div>
+  </header>
+
+  <!-- Main Content Container -->
+  <main class="main-container">
+
+    <!-- Search Hero Section -->
+    <section class="hero-section">
+      <div class="hero-content">
+        <h2 class="hero-headline">Paste Video Link to See <span class="gradient-text">Instant Visual Graphs</span></h2>
+        <p class="hero-desc">Measures viewer comprehension, Roman Urdu praise & confusion signals, and like-weighted sentiment score.</p>
+        
+        <form id="analyze-form" class="search-form">
+          <div class="input-wrapper">
+            <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path>
+              <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path>
+            </svg>
+            <input 
+              type="text" 
+              id="video-url-input" 
+              placeholder="Paste YouTube Video URL (e.g. https://www.youtube.com/watch?v=... or https://youtu.be/...)" 
+              required
+              autocomplete="off"
+            />
+            <button type="submit" id="analyze-btn" class="btn-primary">
+              <span class="btn-text">Analyze Video</span>
+              <span class="btn-loader" style="display: none;"></span>
+            </button>
+          </div>
+
+          <!-- Controls & Quick Presets -->
+          <div class="search-options">
+            <div class="option-item">
+              <label for="comments-limit">Sample Comments:</label>
+              <select id="comments-limit">
+                <option value="50">50 Comments (Fast)</option>
+                <option value="100" selected>100 Comments (Balanced)</option>
+                <option value="200">200 Comments (Deep)</option>
+              </select>
+            </div>
+            
+            <div class="sample-chips">
+              <span class="chips-label">Try sample:</span>
+              <button type="button" class="chip-btn" data-url="https://www.youtube.com/watch?v=fNk_zzaMoSs">3Blue1Brown (Math)</button>
+              <button type="button" class="chip-btn" data-url="https://www.youtube.com/watch?v=kYB8IZa5AuE">FSc Physics Lecture</button>
+              <button type="button" class="chip-btn" data-url="https://www.youtube.com/watch?v=WUvTyaaNkzM">Professor Leonard</button>
+            </div>
+          </div>
+        </form>
+      </div>
+    </section>
+
+    <!-- Error Banner -->
+    <div id="error-banner" class="error-banner" style="display: none;">
+      <div class="error-icon">⚠️</div>
+      <div class="error-msg" id="error-text">An error occurred while fetching video data.</div>
+      <button class="error-close" id="error-close-btn">&times;</button>
+    </div>
+
+    <!-- Loading Skeleton Placeholder -->
+    <div id="loading-state" class="loading-state" style="display: none;">
+      <div class="spinner-orbit"></div>
+      <h3 class="loading-title">Fetching Video & Mining Comments...</h3>
+      <p class="loading-subtitle">Extracting viewer comments, running VADER polarity, and matching Urdu educational phrases.</p>
+    </div>
+
+    <!-- Results Section -->
+    <section id="results-section" class="results-section" style="display: none;">
+
+      <!-- Video Hero Summary Card -->
+      <div class="card video-hero-card">
+        <div class="video-thumbnail-container">
+          <img id="video-thumb" src="" alt="Video thumbnail" class="video-thumb">
+          <a id="video-yt-link" href="#" target="_blank" rel="noopener noreferrer" class="thumb-play-btn" title="Open on YouTube">
+            <svg viewBox="0 0 24 24" fill="currentColor">
+              <path d="M8 5v14l11-7z"/>
+            </svg>
+          </a>
+        </div>
+        <div class="video-meta-info">
+          <div class="video-badge-row">
+            <span class="channel-badge" id="channel-name">Channel Name</span>
+            <span class="upload-date" id="upload-date">Date</span>
+          </div>
+          <h2 class="video-title" id="video-title">Video Title Goes Here</h2>
+          <p class="video-desc" id="video-desc">Short description snippet...</p>
+          
+          <div class="video-stats-strip">
+            <div class="stat-pill">
+              <span class="stat-label">Views</span>
+              <span class="stat-val" id="view-count">0</span>
+            </div>
+            <div class="stat-pill">
+              <span class="stat-label">Video Likes</span>
+              <span class="stat-val" id="like-count">0</span>
+            </div>
+            <div class="stat-pill">
+              <span class="stat-label">Total Comments</span>
+              <span class="stat-val" id="comment-count">0</span>
+            </div>
+            <div class="stat-pill highlighted">
+              <span class="stat-label">Sampled For Analysis</span>
+              <span class="stat-val" id="analyzed-count">0</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Key Score & Signal Cards Grid -->
+      <div class="kpi-grid">
+        
+        <!-- Education Score Card -->
+        <div class="card kpi-card edu-score-card">
+          <div class="kpi-header">
+            <h3>Education Score</h3>
+            <span class="confidence-badge" id="confidence-badge">High Confidence</span>
+          </div>
+          <div class="score-radial-wrapper">
+            <div class="score-circle">
+              <span class="score-number" id="edu-score-num">0</span>
+              <span class="score-scale">/ 100</span>
+            </div>
+          </div>
+          <p class="score-caption" id="score-caption">Calculating score based on weighted sentiment & phrase clarity...</p>
+          <div class="score-formula-preview">
+            <span>50% Sentiment</span> + <span>30% Helped%</span> + <span>20% Low Confusion</span>
+          </div>
+        </div>
+
+        <!-- Sentiment Polarity Card -->
+        <div class="card kpi-card">
+          <div class="kpi-header">
+            <h3>Like-Weighted Sentiment</h3>
+            <span class="sentiment-indicator" id="sentiment-indicator">Positive</span>
+          </div>
+          <div class="sentiment-meter-box">
+            <div class="sentiment-val-large" id="sentiment-val-num">+0.00</div>
+            <div class="sentiment-bar-track">
+              <div class="sentiment-bar-fill" id="sentiment-bar-fill"></div>
+            </div>
+            <div class="sentiment-scale-labels">
+              <span>-1.0 Negative</span>
+              <span>0.0 Neutral</span>
+              <span>+1.0 Positive</span>
+            </div>
+          </div>
+          <p class="kpi-subtext">Multiplied by <code>(likes + 1)</code> to prioritize influential viewer consensus.</p>
+        </div>
+
+        <!-- Helped Me Signal Card -->
+        <div class="card kpi-card highlight-green">
+          <div class="kpi-header">
+            <h3>"Helped Me" Ratio</h3>
+            <span class="icon-tag green">💡 Comprehension</span>
+          </div>
+          <div class="kpi-metric-row">
+            <div class="kpi-metric-big" id="helped-pct-num">0%</div>
+            <div class="kpi-metric-count" id="helped-count-num">0 comments</div>
+          </div>
+          <p class="kpi-subtext">Detected phrases like: <em>"samajh aa gaya", "concept clear", "shukriya", "thank you", "best teacher"</em>.</p>
+        </div>
+
+        <!-- Confused Signal Card -->
+        <div class="card kpi-card highlight-rose">
+          <div class="kpi-header">
+            <h3>"Confused" Friction Ratio</h3>
+            <span class="icon-tag rose">❓ Pacing / Doubts</span>
+          </div>
+          <div class="kpi-metric-row">
+            <div class="kpi-metric-big" id="confused-pct-num">0%</div>
+            <div class="kpi-metric-count" id="confused-count-num">0 comments</div>
+          </div>
+          <p class="kpi-subtext">Detected phrases like: <em>"samajh nahi aya", "too fast", "please explain", "confusing", "wrong"</em>.</p>
+        </div>
+
+      </div>
+
+      <!-- Charts Visualization Grid -->
+      <div class="charts-grid">
+        
+        <!-- Donut Chart: Sentiment Breakdown -->
+        <div class="card chart-card">
+          <div class="chart-header">
+            <div>
+              <h3>Sentiment Polarity Distribution</h3>
+              <p class="chart-subtitle">Proportion of Positive, Neutral, and Negative feedback</p>
+            </div>
+          </div>
+          <div class="chart-canvas-wrapper donut-wrapper">
+            <canvas id="sentiment-donut-chart"></canvas>
+          </div>
+          <div class="custom-legend" id="sentiment-legend"></div>
+        </div>
+
+        <!-- Signals Comparison Bar Chart -->
+        <div class="card chart-card">
+          <div class="chart-header">
+            <div>
+              <h3>Comprehension vs Confusion Signals</h3>
+              <p class="chart-subtitle">Share of viewer comments explicitly flagging success vs difficulty</p>
+            </div>
+          </div>
+          <div class="chart-canvas-wrapper">
+            <canvas id="signals-bar-chart"></canvas>
+          </div>
+        </div>
+
+        <!-- Key Urdu & English Phrases Breakdown -->
+        <div class="card chart-card full-width">
+          <div class="chart-header">
+            <div>
+              <h3>Top Detected Educational Phrases & Urdu Transliterations</h3>
+              <p class="chart-subtitle">Frequency of Roman Urdu & English learning signals across viewer comments</p>
+            </div>
+          </div>
+          <div class="chart-canvas-wrapper bar-wide">
+            <canvas id="phrases-horizontal-chart"></canvas>
+          </div>
+        </div>
+
+      </div>
+
+      <!-- Evidence & Comments Explorer Section -->
+      <div class="card evidence-card">
+        <div class="evidence-tabs-bar">
+          <button type="button" class="tab-btn active" data-tab="tab-helped">
+            👍 Top "Helped Me" Comments (<span id="tab-helped-count">0</span>)
+          </button>
+          <button type="button" class="tab-btn" data-tab="tab-confused">
+            ❓ Top "Confused" Comments (<span id="tab-confused-count">0</span>)
+          </button>
+          <button type="button" class="tab-btn" data-tab="tab-all">
+            💬 All Sampled Comments (<span id="tab-all-count">0</span>)
+          </button>
+          <button type="button" id="export-csv-btn" class="export-btn" title="Download Analyzed Data as CSV">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+              <polyline points="7 10 12 15 17 10"></polyline>
+              <line x1="12" y1="15" x2="12" y2="3"></line>
+            </svg>
+            Export CSV
+          </button>
+        </div>
+
+        <!-- Tab 1: Helped Evidence -->
+        <div id="tab-helped" class="tab-pane active">
+          <div id="helped-comments-list" class="comments-list">
+            <!-- Rendered by JS -->
+          </div>
+        </div>
+
+        <!-- Tab 2: Confused Evidence -->
+        <div id="tab-confused" class="tab-pane">
+          <div id="confused-comments-list" class="comments-list">
+            <!-- Rendered by JS -->
+          </div>
+        </div>
+
+        <!-- Tab 3: All Comments with Filter -->
+        <div id="tab-all" class="tab-pane">
+          <div class="table-controls">
+            <input type="text" id="comment-filter-input" placeholder="Search comments by keyword or author..." class="table-search-input">
+            <div class="filter-pills">
+              <button class="filter-pill active" data-filter="all">All</button>
+              <button class="filter-pill" data-filter="positive">Positive</button>
+              <button class="filter-pill" data-filter="neutral">Neutral</button>
+              <button class="filter-pill" data-filter="negative">Negative</button>
+              <button class="filter-pill" data-filter="helped">Helped Me</button>
+              <button class="filter-pill" data-filter="confused">Confused</button>
+            </div>
+          </div>
+          <div class="table-responsive">
+            <table class="comments-table" id="comments-table">
+              <thead>
+                <tr>
+                  <th style="width: 60px;">Likes</th>
+                  <th style="width: 150px;">Author</th>
+                  <th style="width: 110px;">Sentiment</th>
+                  <th style="width: 140px;">Signals</th>
+                  <th>Comment Text</th>
+                </tr>
+              </thead>
+              <tbody id="all-comments-tbody">
+                <!-- Rendered by JS -->
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+      </div>
+
+      <!-- Educational Disclaimer Note -->
+      <footer class="disclaimer-banner">
+        <div class="disclaimer-icon">ℹ️</div>
+        <div class="disclaimer-text">
+          <strong>Methodological Note:</strong> The Education Score (0–100) measures viewer reception, praise, and Roman Urdu / English feedback signals from the official YouTube Data API. It does not grade factual or curriculum accuracy. Analyses marked with "Low" confidence have fewer than 50 comments and should be interpreted conservatively.
+        </div>
+      </footer>
+
+    </section>
+
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>

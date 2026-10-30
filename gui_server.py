@@ -3,7 +3,21 @@ gui_server.py
 =============
 Local web dashboard server for YouTube Educational Video & Channel Analyzer.
 Provides interactive visual graphs, sentiment breakdowns, education scores,
-and Roman Urdu signal detection.
+Roman Urdu signal detection, and follower vs non-follower comment analysis.
+
+FOLLOWER DETECTION STRATEGY
+----------------------------
+YouTube Data API v3 does NOT expose subscriber status per comment.
+We use two proxy signals to separate "engaged followers" from casual viewers:
+
+  1. REPEAT COMMENTER  – A commenter whose channel-ID appears more than once
+     in the fetched dataset (they consistently engage → likely subscriber).
+  2. HIGH-LIKE COMMENTER – A commenter whose comment(s) received >= 5 likes
+     (community recognises them → likely active follower).
+
+Commenters matching EITHER signal are labelled "Follower (Proxy)".
+All others are labelled "Non-Follower / Casual Viewer".
+Note: This is an approximation; treat results as engagement-proxy data.
 """
 
 from __future__ import annotations
@@ -136,49 +150,218 @@ def fetch_video_details(video_id: str) -> dict | None:
     }
 
 
-def fetch_video_comments(video_id: str, max_comments: int = 150) -> list[dict]:
-    """Fetch top comments with likes, authors, and timestamps."""
+def fetch_video_comments(video_id: str, max_comments: int = 2000) -> list[dict]:
+    """
+    Fetch top-level comments with likes, authors, timestamps, and author channel IDs.
+
+    Supports fetching up to 2000 comments using automatic pagination.
+    Each page returns up to 100 results (YouTube API maximum per page).
+    The `author_channel_id` field is used downstream for follower-proxy detection.
+
+    Args:
+        video_id:     YouTube video ID to fetch comments for.
+        max_comments: Maximum number of comments to retrieve (default 2000).
+
+    Returns:
+        List of comment dicts, each containing:
+          id, author, author_channel_id, author_avatar, text, likes, published_at.
+    """
     comments: list[dict] = []
     page_token: str | None = None
-    
+
     while len(comments) < max_comments:
+        # YouTube allows max 100 results per commentThreads page
+        batch_size = min(max_comments - len(comments), 100)
         params: dict[str, Any] = {
             "part": "snippet",
             "videoId": video_id,
             "order": "relevance",
-            "maxResults": min(max_comments - len(comments), 100),
+            "maxResults": batch_size,
             "textFormat": "plainText",
         }
         if page_token:
-            params["pageToken"] = page_token
-            
+            params["pageToken"] = page_token  # Continue from previous page
+
         data = yt_get("commentThreads", params)
         if not data or "items" not in data:
-            break
-            
+            break  # API returned empty or error — stop pagination
+
         for it in data.get("items", []):
             sn = it["snippet"]["topLevelComment"]["snippet"]
+            # Extract author channel ID for follower-proxy detection
+            author_ch_id = sn.get("authorChannelId", {}).get("value", "") if isinstance(
+                sn.get("authorChannelId"), dict
+            ) else sn.get("authorChannelId", "")
             comments.append({
                 "id": it["id"],
                 "author": sn.get("authorDisplayName", "Viewer"),
+                "author_channel_id": author_ch_id,   # used for follower detection
                 "author_avatar": sn.get("authorProfileImageUrl", ""),
                 "text": sn.get("textDisplay", ""),
                 "likes": int(sn.get("likeCount", 0)),
                 "published_at": sn.get("publishedAt", ""),
             })
             if len(comments) >= max_comments:
-                break
-                
+                break  # Reached requested cap
+
         page_token = data.get("nextPageToken")
         if not page_token:
-            break
-            
+            break  # No more pages available
+
     return comments
 
 
-def analyze_comments(comments: list[dict]) -> dict:
-    """Perform sentiment analysis, phrase detection, and education scoring."""
+def _classify_followers(comments: list[dict], channel_id: str) -> dict[str, str]:
+    """
+    Classify each commenter as "follower" or "non_follower" using proxy signals.
+
+    Since the YouTube API does not expose subscriber status per comment, we use
+    two behavioral proxies to identify likely engaged followers:
+
+      Signal 1 – REPEAT COMMENTER:
+        If the same author_channel_id appears more than once in the fetched
+        dataset, they engage repeatedly → likely a subscriber.
+
+      Signal 2 – HIGH-LIKE COMMENTER:
+        If any comment by this author received >= 5 likes, the community
+        recognises them as a regular contributor → likely a follower.
+
+      Special case – CHANNEL OWNER:
+        If the commenter's channel ID matches the video's channel ID,
+        they are the channel owner (always classified as follower).
+
+    Args:
+        comments:   List of comment dicts (must contain author_channel_id & likes).
+        channel_id: The video's parent channel ID for owner detection.
+
+    Returns:
+        Dict mapping author_channel_id → "follower" | "non_follower".
+        Empty-string author_channel_ids are mapped to "non_follower".
+    """
+    from collections import Counter
+
+    # Count how many times each author_channel_id appears
+    id_counts: Counter = Counter(
+        c["author_channel_id"] for c in comments if c.get("author_channel_id")
+    )
+
+    # Track max likes per author_channel_id
+    max_likes: dict[str, int] = {}
+    for c in comments:
+        aid = c.get("author_channel_id", "")
+        if aid:
+            max_likes[aid] = max(max_likes.get(aid, 0), c.get("likes", 0))
+
+    follower_map: dict[str, str] = {}
+    for aid in id_counts:
+        is_owner      = (aid == channel_id and bool(channel_id))  # channel owner
+        is_repeat     = id_counts[aid] > 1                         # posted multiple times
+        is_high_liked = max_likes.get(aid, 0) >= 5                # recognised by community
+        if is_owner or is_repeat or is_high_liked:
+            follower_map[aid] = "follower"
+        else:
+            follower_map[aid] = "non_follower"
+
+    return follower_map
+
+
+def _score_subset(subset: list[dict]) -> dict:
+    """
+    Compute sentiment counts, helped/confused counts, and edu_score for a
+    subset of already-analyzed comment dicts.
+
+    This is a lightweight aggregation helper used to produce separate stats
+    for the follower and non-follower segments.
+
+    Args:
+        subset: List of analyzed comment dicts (from analyze_comments output).
+
+    Returns:
+        Dict with total_comments, sentiment_summary, signals_summary,
+        edu_score, and confidence for the subset.
+    """
+    n = len(subset)
+    if n == 0:
+        return {
+            "total_comments": 0,
+            "edu_score": 0.0,
+            "confidence": "Low",
+            "sentiment_summary": {"positive_count": 0, "positive_pct": 0.0,
+                                   "neutral_count": 0, "neutral_pct": 0.0,
+                                   "negative_count": 0, "negative_pct": 0.0},
+            "signals_summary": {"helped_count": 0, "helped_pct": 0.0,
+                                 "confused_count": 0, "confused_pct": 0.0},
+        }
+
+    pos_count  = sum(1 for c in subset if c["sentiment_label"] == "positive")
+    neu_count  = sum(1 for c in subset if c["sentiment_label"] == "neutral")
+    neg_count  = sum(1 for c in subset if c["sentiment_label"] == "negative")
+    helped_cnt = sum(1 for c in subset if c["is_helped"])
+    confused_cnt = sum(1 for c in subset if c["is_confused"])
+
+    # Like-weighted average sentiment for this subset
+    total_weights = sum(float(c["likes"] + 1) for c in subset)
+    lw_sentiment  = sum(c["sentiment_score"] * float(c["likes"] + 1) for c in subset) / total_weights
+
+    sentiment_0_100 = (lw_sentiment + 1.0) / 2.0 * 100.0
+    helped_pct   = (helped_cnt   / n) * 100.0
+    confused_pct = (confused_cnt / n) * 100.0
+
+    edu_score = (
+        WEIGHT_SENTIMENT * sentiment_0_100
+        + WEIGHT_HELPED  * helped_pct
+        + WEIGHT_CONFUSED * (100.0 - confused_pct)
+    )
+    edu_score = max(0.0, min(100.0, edu_score))
+
+    confidence = "Low" if n < 50 else ("Medium" if n <= 200 else "High")
+
+    return {
+        "total_comments": n,
+        "edu_score": round(edu_score, 1),
+        "confidence": confidence,
+        "lw_sentiment": round(lw_sentiment, 3),
+        "sentiment_summary": {
+            "positive_count": pos_count,
+            "positive_pct":   round((pos_count  / n) * 100, 1),
+            "neutral_count":  neu_count,
+            "neutral_pct":    round((neu_count  / n) * 100, 1),
+            "negative_count": neg_count,
+            "negative_pct":   round((neg_count  / n) * 100, 1),
+        },
+        "signals_summary": {
+            "helped_count":  helped_cnt,
+            "helped_pct":    round(helped_pct,   1),
+            "confused_count": confused_cnt,
+            "confused_pct":  round(confused_pct, 1),
+        },
+    }
+
+
+def analyze_comments(comments: list[dict], channel_id: str = "") -> dict:
+    """
+    Perform sentiment analysis, phrase detection, education scoring,
+    and follower vs non-follower breakdown.
+
+    Steps:
+      1. Run VADER sentiment on each comment text.
+      2. Detect HELPED_PHRASES and CONFUSED_PHRASES (educational signals).
+      3. Compute like-weighted education score (0-100) for all comments.
+      4. Classify commenters as follower or non-follower (proxy-based).
+      5. Produce separate stats for each audience segment.
+
+    Args:
+        comments:   Raw comment dicts from fetch_video_comments().
+        channel_id: Parent channel ID; used for owner detection in follower
+                    classification. Pass empty string if unknown.
+
+    Returns:
+        Analysis dict containing overall stats, per-comment details,
+        follower/non-follower segment breakdowns, and top evidence comments.
+    """
+    # Early return for empty input — all counters zeroed
     if not comments:
+        empty_segment = _score_subset([])
         return {
             "total_comments": 0,
             "edu_score": 0,
@@ -187,6 +370,10 @@ def analyze_comments(comments: list[dict]) -> dict:
             "signals_summary": {"helped": 0, "confused": 0},
             "matched_phrases": [],
             "comments": [],
+            "follower_analysis": {
+                "followers": empty_segment,
+                "non_followers": empty_segment,
+            },
         }
 
     phrase_counts: dict[str, int] = {}
@@ -257,28 +444,31 @@ def analyze_comments(comments: list[dict]) -> dict:
         })
 
     n = len(comments)
-    lw_sentiment = (weighted_sentiment_sum / total_weights) if total_weights > 0 else 0.0
+    # Compute overall like-weighted sentiment
+    lw_sentiment    = (weighted_sentiment_sum / total_weights) if total_weights > 0 else 0.0
     sentiment_0_100 = (lw_sentiment + 1.0) / 2.0 * 100.0
 
-    helped_pct = (helped_count / n) * 100.0
+    helped_pct   = (helped_count / n) * 100.0
     confused_pct = (confused_count / n) * 100.0
     positive_pct = (pos_count / n) * 100.0
-    neutral_pct = (neu_count / n) * 100.0
-    negative_pct = (neg_count / n) * 100.0
+    neutral_pct  = (neu_count  / n) * 100.0
+    negative_pct = (neg_count  / n) * 100.0
 
+    # Overall education score clamped to [0, 100]
     edu_score = (
         WEIGHT_SENTIMENT * sentiment_0_100
-        + WEIGHT_HELPED * helped_pct
+        + WEIGHT_HELPED  * helped_pct
         + WEIGHT_CONFUSED * (100.0 - confused_pct)
     )
     edu_score = max(0.0, min(100.0, edu_score))
 
+    # Confidence tier based on total analyzed comments (>200 = High)
     confidence = "Low" if n < 50 else ("Medium" if n <= 200 else "High")
 
-    # Top phrase list
+    # Top 10 most-frequent educational phrases across all comments
     sorted_phrases = sorted(phrase_counts.items(), key=lambda x: x[1], reverse=True)[:10]
 
-    # Top evidence comments
+    # Top 5 most-liked comments in each signal category (evidence cards)
     top_helped = sorted(
         [c for c in analyzed_comments if c["is_helped"]],
         key=lambda x: x["likes"],
@@ -291,30 +481,57 @@ def analyze_comments(comments: list[dict]) -> dict:
         reverse=True
     )[:5]
 
+    # ------------------------------------------------------------------
+    # FOLLOWER vs NON-FOLLOWER BREAKDOWN
+    # ------------------------------------------------------------------
+    # Classify each author_channel_id as follower or non_follower using
+    # proxy signals (repeat commenter or high-like commenter).
+    follower_map = _classify_followers(analyzed_comments, channel_id)
+
+    # Tag each analyzed comment with its audience segment label
+    for c in analyzed_comments:
+        aid = c.get("author_channel_id", "")
+        c["audience_segment"] = follower_map.get(aid, "non_follower")
+
+    # Split the analyzed comments into two audience segments
+    follower_comments     = [c for c in analyzed_comments if c["audience_segment"] == "follower"]
+    non_follower_comments = [c for c in analyzed_comments if c["audience_segment"] == "non_follower"]
+
+    # Compute independent stats for each audience segment
+    follower_stats     = _score_subset(follower_comments)
+    non_follower_stats = _score_subset(non_follower_comments)
+
     return {
-        "total_comments": n,
-        "total_likes": total_likes,
-        "edu_score": round(edu_score, 1),
-        "confidence": confidence,
-        "lw_sentiment": round(lw_sentiment, 3),
+        "total_comments":  n,
+        "total_likes":     total_likes,
+        "edu_score":       round(edu_score, 1),
+        "confidence":      confidence,
+        "lw_sentiment":    round(lw_sentiment, 3),
         "sentiment_summary": {
             "positive_count": pos_count,
-            "positive_pct": round(positive_pct, 1),
-            "neutral_count": neu_count,
-            "neutral_pct": round(neutral_pct, 1),
+            "positive_pct":   round(positive_pct, 1),
+            "neutral_count":  neu_count,
+            "neutral_pct":    round(neutral_pct,  1),
             "negative_count": neg_count,
-            "negative_pct": round(negative_pct, 1),
+            "negative_pct":   round(negative_pct, 1),
         },
         "signals_summary": {
-            "helped_count": helped_count,
-            "helped_pct": round(helped_pct, 1),
+            "helped_count":   helped_count,
+            "helped_pct":     round(helped_pct,   1),
             "confused_count": confused_count,
-            "confused_pct": round(confused_pct, 1),
+            "confused_pct":   round(confused_pct, 1),
         },
-        "top_phrases": [{"phrase": p, "count": c} for p, c in sorted_phrases],
-        "top_helped": top_helped,
+        "top_phrases":  [{"phrase": p, "count": c} for p, c in sorted_phrases],
+        "top_helped":   top_helped,
         "top_confused": top_confused,
-        "comments": analyzed_comments,
+        "comments":     analyzed_comments,
+        # Audience-segment breakdown (follower proxy analysis)
+        "follower_analysis": {
+            "followers":     follower_stats,      # engaged / repeat / high-liked
+            "non_followers": non_follower_stats,  # casual / one-time viewers
+            "follower_count":     len(follower_comments),
+            "non_follower_count": len(non_follower_comments),
+        },
     }
 
 
@@ -335,8 +552,9 @@ class AppHandler(SimpleHTTPRequestHandler):
                 return
 
             url_input = data.get("url", "").strip()
-            max_comments = int(data.get("max_comments", 100))
-            max_comments = max(10, min(max_comments, 300))
+            # Accept up to 2000 comments; clamp to valid range [10, 2000]
+            max_comments = int(data.get("max_comments", 200))
+            max_comments = max(10, min(max_comments, 2000))
 
             if not API_KEY:
                 self.send_json_response({
@@ -359,11 +577,11 @@ class AppHandler(SimpleHTTPRequestHandler):
                 }, status=404)
                 return
 
-            # Fetch comments
+            # Fetch up to max_comments (supports pagination up to 2000)
             comments = fetch_video_comments(video_id, max_comments=max_comments)
             if not comments:
-                # Video has disabled comments or 0 comments
-                analysis = analyze_comments([])
+                # Video has disabled comments or yielded 0 results
+                analysis = analyze_comments([], channel_id=video_meta.get("channel_id", ""))
                 self.send_json_response({
                     "video": video_meta,
                     "analysis": analysis,
@@ -371,7 +589,11 @@ class AppHandler(SimpleHTTPRequestHandler):
                 })
                 return
 
-            analysis = analyze_comments(comments)
+            # Pass channel_id so follower detection can identify the channel owner
+            analysis = analyze_comments(
+                comments,
+                channel_id=video_meta.get("channel_id", ""),
+            )
             self.send_json_response({
                 "video": video_meta,
                 "analysis": analysis,

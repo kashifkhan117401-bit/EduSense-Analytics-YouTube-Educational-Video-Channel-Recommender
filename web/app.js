@@ -55,7 +55,7 @@ document.addEventListener('DOMContentLoaded', () => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           url: url,
-          max_comments: parseInt(commentsLimit.value, 10) || 100
+          max_comments: parseInt(commentsLimit.value, 10) || 200
         })
       });
 
@@ -203,6 +203,9 @@ document.addEventListener('DOMContentLoaded', () => {
     document.getElementById('tab-all-count').textContent = analysis.comments.length;
 
     renderAllCommentsTable(analysis.comments);
+
+    // 5. Follower vs Non-Follower breakdown
+    renderFollowerAnalysis(analysis.follower_analysis);
 
     // Show section
     resultsSection.style.display = 'block';
@@ -395,6 +398,153 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   // ---------------------------------------------------------------------------
+  // FOLLOWER vs NON-FOLLOWER ANALYSIS PANEL
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Render a side-by-side comparison card for the two audience segments.
+   * Since the YouTube API does not expose subscriber status, we use
+   * behavioral proxy signals to approximate follower vs casual-viewer split.
+   *
+   * @param {Object} followerAnalysis - follower_analysis object from the API.
+   */
+  function renderFollowerAnalysis(followerAnalysis) {
+    // Find or create the follower panel container
+    let panel = document.getElementById('follower-analysis-panel');
+    if (!panel) {
+      // Dynamically inject the panel before the all-comments table section
+      const allCommentsSection = document.querySelector('.all-comments-section') ||
+                                  document.getElementById('results-section');
+      panel = document.createElement('section');
+      panel.id = 'follower-analysis-panel';
+      panel.className = 'chart-card';
+      panel.style.cssText = 'margin: 24px 0; padding: 28px;';
+      // Insert before the comments table or at the end of results
+      const tabsContainer = document.querySelector('.tabs-container') ||
+                             document.getElementById('results-section');
+      if (tabsContainer && tabsContainer.parentNode) {
+        tabsContainer.parentNode.insertBefore(panel, tabsContainer);
+      } else {
+        document.getElementById('results-section').appendChild(panel);
+      }
+    }
+
+    const { followers, non_followers, follower_count, non_follower_count } = followerAnalysis;
+    const totalForPercent = (follower_count + non_follower_count) || 1;
+    const followerPct = ((follower_count / totalForPercent) * 100).toFixed(1);
+    const nonFollowerPct = ((non_follower_count / totalForPercent) * 100).toFixed(1);
+
+    /**
+     * Build one segment stat block HTML.
+     * @param {string} title - Segment label
+     * @param {string} icon - Emoji icon
+     * @param {string} colorClass - CSS color variable or hex for accent
+     * @param {Object} stats - Segment stats from the API
+     * @param {number} count - Number of comments in this segment
+     * @param {string} pct - Percentage of total comments
+     */
+    function segmentBlock(title, icon, accentColor, stats, count, pct) {
+      const helpedPct  = stats.signals_summary?.helped_pct  ?? 0;
+      const confusedPct = stats.signals_summary?.confused_pct ?? 0;
+      const posPct     = stats.sentiment_summary?.positive_pct ?? 0;
+      const negPct     = stats.sentiment_summary?.negative_pct ?? 0;
+      const eduScore   = stats.edu_score ?? 0;
+      const conf       = stats.confidence ?? 'Low';
+
+      return `
+        <div style="flex:1; min-width:260px; background:rgba(255,255,255,0.04); border:1px solid rgba(255,255,255,0.08);
+                    border-radius:14px; padding:22px; position:relative; overflow:hidden;">
+          <!-- Accent bar -->
+          <div style="position:absolute;top:0;left:0;right:0;height:3px;background:${accentColor};"></div>
+
+          <div style="display:flex;align-items:center;gap:10px;margin-bottom:16px;">
+            <span style="font-size:1.6rem;">${icon}</span>
+            <div>
+              <div style="font-size:1rem;font-weight:700;color:#f8fafc;">${title}</div>
+              <div style="font-size:0.78rem;color:#94a3b8;">${count} comments &nbsp;·&nbsp; ${pct}% of total</div>
+            </div>
+          </div>
+
+          <!-- Edu Score -->
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;">
+            <span style="font-size:0.8rem;color:#94a3b8;">Edu Score</span>
+            <span style="font-size:1.4rem;font-weight:800;color:${accentColor};">${eduScore}</span>
+          </div>
+
+          <!-- Confidence -->
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;">
+            <span style="font-size:0.8rem;color:#94a3b8;">Confidence</span>
+            <span class="confidence-badge confidence-${conf.toLowerCase()}">${conf}</span>
+          </div>
+
+          <!-- Sentiment bar -->
+          <div style="margin-bottom:10px;">
+            <div style="display:flex;justify-content:space-between;margin-bottom:4px;">
+              <span style="font-size:0.78rem;color:#94a3b8;">Positive</span>
+              <span style="font-size:0.78rem;color:#10b981;font-weight:600;">${posPct}%</span>
+            </div>
+            <div style="height:6px;background:rgba(255,255,255,0.07);border-radius:3px;overflow:hidden;">
+              <div style="width:${posPct}%;height:100%;background:#10b981;border-radius:3px;transition:width 0.6s ease;"></div>
+            </div>
+          </div>
+          <div style="margin-bottom:10px;">
+            <div style="display:flex;justify-content:space-between;margin-bottom:4px;">
+              <span style="font-size:0.78rem;color:#94a3b8;">Negative</span>
+              <span style="font-size:0.78rem;color:#f43f5e;font-weight:600;">${negPct}%</span>
+            </div>
+            <div style="height:6px;background:rgba(255,255,255,0.07);border-radius:3px;overflow:hidden;">
+              <div style="width:${negPct}%;height:100%;background:#f43f5e;border-radius:3px;transition:width 0.6s ease;"></div>
+            </div>
+          </div>
+
+          <!-- Helped / Confused mini-stats -->
+          <div style="display:flex;gap:12px;margin-top:14px;">
+            <div style="flex:1;background:rgba(16,185,129,0.1);border-radius:8px;padding:10px;text-align:center;">
+              <div style="font-size:1.1rem;font-weight:700;color:#10b981;">${helpedPct}%</div>
+              <div style="font-size:0.7rem;color:#94a3b8;">Helped Me</div>
+            </div>
+            <div style="flex:1;background:rgba(244,63,94,0.1);border-radius:8px;padding:10px;text-align:center;">
+              <div style="font-size:1.1rem;font-weight:700;color:#f43f5e;">${confusedPct}%</div>
+              <div style="font-size:0.7rem;color:#94a3b8;">Confused</div>
+            </div>
+          </div>
+        </div>
+      `;
+    }
+
+    panel.innerHTML = `
+      <div style="margin-bottom:20px;">
+        <h2 style="font-size:1.15rem;font-weight:700;color:#f8fafc;margin:0 0 4px;">
+          👥 Follower vs Non-Follower Analysis
+        </h2>
+        <p style="font-size:0.8rem;color:#64748b;margin:0;">
+          Proxy-based segmentation. <strong>Followers (Proxy)</strong> = commenters who posted multiple times
+          or received ≥5 likes (likely engaged subscribers). Others = casual / one-time viewers.
+          YouTube API does not expose direct subscriber status per comment.
+        </p>
+      </div>
+
+      <!-- Segment cards -->
+      <div style="display:flex;gap:16px;flex-wrap:wrap;">
+        ${segmentBlock('Followers (Proxy)', '🌟', '#6366f1', followers, follower_count, followerPct)}
+        ${segmentBlock('Non-Followers / Casual', '👁️', '#f59e0b', non_followers, non_follower_count, nonFollowerPct)}
+      </div>
+
+      <!-- Distribution bar -->
+      <div style="margin-top:20px;">
+        <div style="display:flex;justify-content:space-between;margin-bottom:6px;font-size:0.8rem;color:#94a3b8;">
+          <span>🌟 Followers ${followerPct}%</span>
+          <span>👁️ Non-Followers ${nonFollowerPct}%</span>
+        </div>
+        <div style="height:10px;background:rgba(255,255,255,0.07);border-radius:5px;overflow:hidden;display:flex;">
+          <div style="width:${followerPct}%;background:linear-gradient(90deg,#6366f1,#818cf8);transition:width 0.8s ease;"></div>
+          <div style="flex:1;background:linear-gradient(90deg,#f59e0b,#fbbf24);"></div>
+        </div>
+      </div>
+    `;
+  }
+
+  // ---------------------------------------------------------------------------
   // EVIDENCE LIST RENDERING
   // ---------------------------------------------------------------------------
 
@@ -474,6 +624,12 @@ document.addEventListener('DOMContentLoaded', () => {
       filtered = filtered.filter(c => c.is_helped);
     } else if (activeFilter === 'confused') {
       filtered = filtered.filter(c => c.is_confused);
+    } else if (activeFilter === 'followers') {
+      // Show only comments from the follower proxy segment
+      filtered = filtered.filter(c => c.audience_segment === 'follower');
+    } else if (activeFilter === 'non_followers') {
+      // Show only casual / one-time viewer comments
+      filtered = filtered.filter(c => c.audience_segment === 'non_follower');
     }
 
     // Filter by text / author query
@@ -502,8 +658,13 @@ document.addEventListener('DOMContentLoaded', () => {
 
     tbody.innerHTML = comments.map(c => {
       const signals = [];
-      if (c.is_helped) signals.push('<span class="icon-tag green">Helped Me</span>');
+      if (c.is_helped)  signals.push('<span class="icon-tag green">Helped Me</span>');
       if (c.is_confused) signals.push('<span class="icon-tag rose">Confused</span>');
+
+      // Audience segment badge (follower proxy)
+      const segBadge = c.audience_segment === 'follower'
+        ? '<span class="icon-tag" style="background:rgba(99,102,241,0.18);color:#818cf8;border:1px solid rgba(99,102,241,0.3);">🌟 Follower</span>'
+        : '<span class="icon-tag" style="background:rgba(245,158,11,0.12);color:#fbbf24;border:1px solid rgba(245,158,11,0.3);">👁️ Viewer</span>';
 
       return `
         <tr>
@@ -517,8 +678,9 @@ document.addEventListener('DOMContentLoaded', () => {
           <td>
             <span class="sentiment-pill ${c.sentiment_label}">${c.sentiment_label}</span>
           </td>
+          <td>${segBadge}</td>
           <td>${signals.join(' ') || '<span style="color:#64748b;">-</span>'}</td>
-          <td style="max-width:480px; word-break:break-word;">${escapeHtml(c.text)}</td>
+          <td style="max-width:440px; word-break:break-word;">${escapeHtml(c.text)}</td>
         </tr>
       `;
     }).join('');
@@ -553,7 +715,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const videoTitle = currentAnalysisData.video.title.replace(/[^\w\s-]/g, '').trim().substring(0, 30);
     const comments = currentAnalysisData.analysis.comments;
     
-    const headers = ['Comment ID', 'Author', 'Likes', 'Published At', 'Sentiment Label', 'Sentiment Score', 'Is Helped', 'Is Confused', 'Comment Text'];
+    const headers = ['Comment ID', 'Author', 'Likes', 'Published At', 'Sentiment Label', 'Sentiment Score', 'Is Helped', 'Is Confused', 'Audience Segment', 'Comment Text'];
     
     const rows = comments.map(c => [
       c.id,
@@ -564,6 +726,7 @@ document.addEventListener('DOMContentLoaded', () => {
       c.sentiment_score,
       c.is_helped ? 'TRUE' : 'FALSE',
       c.is_confused ? 'TRUE' : 'FALSE',
+      c.audience_segment || 'non_follower',   // follower proxy segment
       `"${c.text.replace(/"/g, '""')}"`
     ]);
 
